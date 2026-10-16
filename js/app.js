@@ -39,7 +39,7 @@ let isSpeakerMuted = false;
 let activeCallMode = null; // null | 'voice' | 'video'
 let pendingIncomingOffer = null;
 
-// Walkie-Talkie Relay Fallback (when WebView/Carrier blocks UDP WebRTC)
+// Walkie-Talkie Relay Fallback
 let pttRecorder = null;
 let pttInterval = null;
 
@@ -92,6 +92,23 @@ msgInput.addEventListener("input", () => {
   localTypingTimeout = setTimeout(() => {
     dispatchRaw({ type: "typing", status: false, senderId: clientId });
   }, 2500);
+});
+
+// Intercept Pasted Images from Gboard / System Clipboard (WebView Bypass)
+msgInput.addEventListener("paste", (e) => {
+  const items = (e.clipboardData || window.clipboardData)?.items;
+  if (!items) return;
+
+  for (let i = 0; i < items.length; i++) {
+    if (items[i].type.indexOf("image") !== -1) {
+      e.preventDefault();
+      const file = items[i].getAsFile();
+      if (file) {
+        handleFileSelected({ target: { files: [file], value: "" } });
+      }
+      return;
+    }
+  }
 });
 
 window.addEventListener("DOMContentLoaded", () => {
@@ -160,29 +177,36 @@ function injectCallOverlayDOM() {
   if (document.getElementById("call-overlay")) return;
   const div = document.createElement("div");
   div.id = "call-overlay";
+  div.style.cssText = "position:fixed;inset:0;background:rgba(9,10,15,0.96);z-index:200;display:none;flex-direction:column;justify-content:space-between;align-items:center;padding:40px 20px;backdrop-filter:blur(10px);";
   div.innerHTML = `
-    <div class="call-header">
-      <div class="call-status-title" id="call-title">ENCRYPTED CALL</div>
-      <div class="call-status-sub" id="call-sub">DIALING PEER...</div>
+    <div style="text-align:center;z-index:202;">
+      <div id="call-title" style="font-size:20px;font-weight:600;color:#fff;margin-bottom:6px;">ENCRYPTED CALL</div>
+      <div id="call-sub" style="font-size:13px;color:var(--accent);letter-spacing:0.5px;">DIALING PEER...</div>
     </div>
-    <div class="video-stage">
-      <div class="call-avatar-pulse" id="call-avatar">
+    <div style="position:relative;width:100%;flex:1;max-height:65vh;margin:20px 0;border-radius:18px;overflow:hidden;background:#12151e;border:1px solid var(--card-border);display:flex;align-items:center;justify-content:center;">
+      <div id="call-avatar" style="width:96px;height:96px;border-radius:50%;background:rgba(0,168,132,0.15);border:2px solid var(--accent);display:flex;align-items:center;justify-content:center;">
         <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#00a884" stroke-width="2">
           <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/>
         </svg>
       </div>
-      <video id="remote-video" autoplay playsinline></video>
-      <video id="local-video" autoplay playsinline muted></video>
+      <video id="remote-video" autoplay playsinline style="width:100%;height:100%;object-fit:cover;display:none;"></video>
+      <video id="local-video" autoplay playsinline muted style="position:absolute;bottom:14px;right:14px;width:95px;height:135px;border-radius:12px;object-fit:cover;border:2px solid var(--accent);background:#000;display:none;z-index:203;"></video>
     </div>
-    <div class="call-controls">
-      <button class="call-circle-btn call-btn-answer" id="call-answer-btn" style="display:none;" onclick="acceptIncomingCall()">✓</button>
-      <button class="call-circle-btn call-btn-end" onclick="endActiveCall(true)">✕</button>
+    <div style="display:flex;align-items:center;gap:22px;z-index:202;">
+      <button id="call-answer-btn" onclick="acceptIncomingCall()" style="width:58px;height:58px;border-radius:50%;border:none;background:#22c55e;color:#fff;font-size:22px;display:none;align-items:center;justify-content:center;cursor:pointer;">✓</button>
+      <button onclick="endActiveCall(true)" style="width:58px;height:58px;border-radius:50%;border:none;background:#ef4444;color:#fff;font-size:22px;display:flex;align-items:center;justify-content:center;cursor:pointer;">✕</button>
     </div>
   `;
   document.body.appendChild(div);
 }
 
 async function triggerCallHandOff(isVideo) {
+  // Check if Native Android Bridge exists first
+  if (window.AndroidBridge && typeof window.AndroidBridge.openCallScreen === "function") {
+    window.AndroidBridge.openCallScreen(isVideo);
+    return;
+  }
+
   if (!passkey || !channel) {
     logSys("CONNECT TO RELAY FIRST BEFORE CALLING.");
     return;
@@ -209,7 +233,7 @@ async function triggerCallHandOff(isVideo) {
     await createAndSendOffer(isVideo);
   } catch (err) {
     document.getElementById("call-overlay").style.display = "none";
-    logSys("PERMISSION ERROR: APK WebView needs RECORD_AUDIO / CAMERA permission.");
+    logSys("CALL BLOCKED: APK WebView requires Audio/Camera permissions.");
   }
 }
 
@@ -243,7 +267,7 @@ function setupRtcPeer() {
         remoteAudioEl.muted = isSpeakerMuted;
         remoteAudioEl.play().catch(() => {});
       }
-      document.getElementById("call-sub").innerText = "CONNECTED (P2P ENCRYPTED)";
+      document.getElementById("call-sub").innerText = "CONNECTED (P2P LIVE)";
     }
   };
 }
@@ -278,7 +302,6 @@ async function handleRtcSignal(cipherSig) {
 
   if (signal.sdp) {
     if (signal.sdp.type === "offer") {
-      // If it's a full Voice/Video call, show incoming call screen
       if (signal.callMode === "video" || signal.callMode === "voice") {
         pendingIncomingOffer = signal;
         activeCallMode = signal.callMode;
@@ -290,7 +313,6 @@ async function handleRtcSignal(cipherSig) {
         return;
       }
 
-      // If it's PUBG background mic, auto-answer silently!
       setupRtcPeer();
       await rtcPeer.setRemoteDescription(new RTCSessionDescription(signal.sdp));
       while (iceCandidateQueue.length > 0) {
@@ -354,16 +376,21 @@ async function acceptIncomingCall() {
     });
     pendingIncomingOffer = null;
   } catch (err) {
-    logSys("CALL FAILED: Microphone/Camera permission denied by WebView.");
+    logSys("CALL FAILED: Microphone/Camera blocked by WebView.");
     endActiveCall(true);
   }
 }
 
 function endActiveCall(notifyPeer) {
-  document.getElementById("call-overlay").style.display = "none";
-  document.getElementById("remote-video").style.display = "none";
-  document.getElementById("local-video").style.display = "none";
-  document.getElementById("call-avatar").style.display = "flex";
+  const overlay = document.getElementById("call-overlay");
+  if (overlay) overlay.style.display = "none";
+  const rv = document.getElementById("remote-video");
+  if (rv) rv.style.display = "none";
+  const lv = document.getElementById("local-video");
+  if (lv) lv.style.display = "none";
+  const av = document.getElementById("call-avatar");
+  if (av) av.style.display = "flex";
+
   activeCallMode = null;
   pendingIncomingOffer = null;
 
@@ -384,7 +411,6 @@ function endActiveCall(notifyPeer) {
   }
 }
 
-// PUBG Mic Toggle (WebRTC + Walkie-Talkie Encrypted Audio Streamer)
 async function toggleMic() {
   const btn = document.getElementById("mic-toggle-btn");
 
@@ -394,12 +420,11 @@ async function toggleMic() {
       isMicActive = true;
       if (btn) btn.classList.add("mic-active");
 
-      // Start WebRTC stream AND Walkie-Talkie fallback burst
       await createAndSendOffer(false);
       startPttFallback(localMediaStream);
-      logSys("LIVE MIC ACTIVE (STREAMING AUDIO).");
+      logSys("LIVE MIC ON (STREAMING).");
     } catch (err) {
-      logSys("MIC BLOCKED: Enable RECORD_AUDIO permission in APK / App Info.");
+      logSys("MIC BLOCKED BY WEBVIEW: Open in Chrome or enable Audio permission.");
     }
   } else {
     isMicActive = false;
@@ -409,7 +434,7 @@ async function toggleMic() {
       localMediaStream.getTracks().forEach(t => t.stop());
       localMediaStream = null;
     }
-    logSys("LIVE MIC MUTED.");
+    logSys("LIVE MIC OFF.");
   }
 }
 
@@ -452,7 +477,6 @@ function stopPttFallback() {
 
 function playIncomingAudioBurst(cipherAudio) {
   if (isSpeakerMuted) return;
-  // Only play fallback burst if WebRTC track isn't already playing
   if (remoteAudioEl.srcObject && !remoteAudioEl.paused) return;
   const dataUrl = decrypt(cipherAudio);
   if (dataUrl) {
@@ -470,10 +494,32 @@ function toggleSpeaker() {
 }
 
 // -------------------------------------------------------------
-// CHUNKED FILE & IMAGE TRANSFER (BYPASSES PIESOCKET 16KB LIMIT)
+// CLIPBOARD PASTE + CHUNKED FILE & IMAGE TRANSFER
 // -------------------------------------------------------------
-function triggerFileSelect() {
-  document.getElementById("file-picker").click();
+async function triggerFileSelect() {
+  // 1. Try reading an image directly from the Clipboard API first (bypasses broken WebView picker)
+  if (navigator.clipboard && navigator.clipboard.read) {
+    try {
+      const items = await navigator.clipboard.read();
+      for (const item of items) {
+        const imgType = item.types.find(t => t.startsWith("image/"));
+        if (imgType) {
+          const blob = await item.getType(imgType);
+          const file = new File([blob], "clipboard_photo.jpg", { type: imgType });
+          handleFileSelected({ target: { files: [file], value: "" } });
+          return;
+        }
+      }
+    } catch (e) {}
+  }
+
+  // 2. Trigger standard file input (works in Chrome or WebViews with onShowFileChooser)
+  const picker = document.getElementById("file-picker");
+  if (picker) picker.click();
+
+  // 3. Guide user to paste directly from keyboard clipboard if WebView ignores picker
+  msgInput.focus();
+  logSys("WEBVIEW TIP: Copy any photo or tap it in your Keyboard Clipboard to send!");
 }
 
 async function compressImageIfNeeded(file) {
@@ -503,10 +549,10 @@ async function compressImageIfNeeded(file) {
 async function handleFileSelected(event) {
   const file = event.target.files[0];
   if (!file || !passkey) return;
-  event.target.value = "";
+  if (event.target) event.target.value = "";
 
   if (!file.type.startsWith("image/") && file.size > 400 * 1024) {
-    alert("For non-image files over WebSockets, keep size under 400 KB.");
+    alert("For non-image files, keep size under 400 KB.");
     return;
   }
 
@@ -520,8 +566,8 @@ async function handleFileSelected(event) {
   }
 
   const filePayload = {
-    name: file.name,
-    mime: file.type,
+    name: file.name || "photo.jpg",
+    mime: file.type || "image/jpeg",
     data: base64Data
   };
 
@@ -529,21 +575,20 @@ async function handleFileSelected(event) {
   const nowTime = getFormattedTime();
   const activeBurn = disappearingEnabled ? burnDuration : 0;
 
-  renderBubble(file.name, "you", msgId, nowTime, activeBurn, null, filePayload);
+  renderBubble(filePayload.name, "you", msgId, nowTime, activeBurn, null, filePayload);
 
-  const fullPacketStr = JSON.stringify({
+  const fullPacketObj = {
     msgId: msgId,
-    text: file.name,
+    text: filePayload.name,
     timestamp: nowTime,
     burn: activeBurn,
     reply: null,
     fileData: filePayload,
     senderId: clientId
-  });
+  };
 
-  const encryptedFull = encrypt(fullPacketStr);
+  const encryptedFull = encrypt(JSON.stringify(fullPacketObj));
 
-  // Split into safe 7,500-char chunks so PieSocket never drops them
   const CHUNK_SIZE = 7500;
   const totalChunks = Math.ceil(encryptedFull.length / CHUNK_SIZE);
 
@@ -557,7 +602,6 @@ async function handleFileSelected(event) {
       chunk: part,
       senderId: clientId
     });
-    // Tiny 60ms pacing so WebSocket buffer doesn't flood
     await new Promise(r => setTimeout(r, 60));
   }
 }
