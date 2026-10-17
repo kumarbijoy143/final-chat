@@ -1,5 +1,9 @@
 let passkey = "";
-let clientId = "dev_" + Math.random().toString(36).substr(2, 7);
+let clientId = localStorage.getItem("term_client_id");
+if (!clientId) {
+  clientId = "dev_" + Math.random().toString(36).substr(2, 7);
+  localStorage.setItem("term_client_id", clientId);
+}
 let channel = null;
 
 let disappearingEnabled = localStorage.getItem("term_disappearing") !== null
@@ -27,19 +31,16 @@ let activeQuotedTarget = null;
 let editingTargetMsgId = null;
 let activeContextTarget = null;
 
-// File Chunk Reassembly Buffer
 const incomingFileBuffers = {};
 
-// WebRTC & PUBG Audio/Video State
 let rtcPeer = null;
 let iceCandidateQueue = [];
 let localMediaStream = null;
 let isMicActive = false;
 let isSpeakerMuted = false;
-let activeCallMode = null; // null | 'voice' | 'video'
+let activeCallMode = null;
 let pendingIncomingOffer = null;
 
-// Walkie-Talkie Relay Fallback
 let pttRecorder = null;
 let pttInterval = null;
 
@@ -94,7 +95,6 @@ msgInput.addEventListener("input", () => {
   }, 2500);
 });
 
-// Intercept Pasted Images from Gboard / System Clipboard (WebView Bypass)
 msgInput.addEventListener("paste", (e) => {
   const items = (e.clipboardData || window.clipboardData)?.items;
   if (!items) return;
@@ -126,6 +126,13 @@ window.addEventListener("DOMContentLoaded", () => {
       keyInput.click();
     }
   }, 150);
+
+  // Check if configuration is missing upon first open
+  if (!getStoredApiKey()) {
+    setTimeout(() => {
+      openConfigModal();
+    }, 300);
+  }
 });
 
 msgInput.addEventListener("focus", () => scrollToBottom());
@@ -143,6 +150,20 @@ document.getElementById("numeric-key").addEventListener("keydown", (e) => {
 
 function triggerNativeEmojiKeyboard() {
   msgInput.focus();
+}
+
+function showToast(msg) {
+  const container = document.getElementById("toast-container");
+  if (!container) return;
+  const t = document.createElement("div");
+  t.className = "toast-item";
+  t.innerText = msg;
+  container.appendChild(t);
+  setTimeout(() => {
+    t.style.opacity = "0";
+    t.style.transition = "opacity 0.2s ease";
+    setTimeout(() => t.remove(), 200);
+  }, 2500);
 }
 
 function panicExit() {
@@ -168,6 +189,72 @@ function mountSession() {
 
   initRelay();
   fetchAndBurnVault();
+}
+
+// -------------------------------------------------------------
+// CUSTOM CONFIGURATION MODAL CONTROLS
+// -------------------------------------------------------------
+function openConfigModal() {
+  const k = getStoredApiKey();
+  const v = getStoredVaultUrl();
+
+  document.getElementById("modal-api-key").value = k;
+  document.getElementById("modal-vault-url").value = v;
+  document.getElementById("modal-api-key").type = "password";
+  document.getElementById("modal-key-error").style.display = "none";
+  document.getElementById("modal-vault-error").style.display = "none";
+  document.getElementById("config-modal").style.display = "flex";
+}
+
+function closeConfigModal() {
+  document.getElementById("config-modal").style.display = "none";
+}
+
+function toggleApiKeyVisibility() {
+  const input = document.getElementById("modal-api-key");
+  const btn = event.target;
+  if (input.type === "password") {
+    input.type = "text";
+    btn.innerText = "Hide";
+  } else {
+    input.type = "password";
+    btn.innerText = "Show";
+  }
+}
+
+function saveConfigModal() {
+  const k = document.getElementById("modal-api-key").value.trim();
+  const v = document.getElementById("modal-vault-url").value.trim();
+
+  let hasError = false;
+  if (!k) {
+    document.getElementById("modal-key-error").style.display = "block";
+    hasError = true;
+  } else {
+    document.getElementById("modal-key-error").style.display = "none";
+  }
+
+  if (v && !v.startsWith("https://")) {
+    document.getElementById("modal-vault-error").style.display = "block";
+    hasError = true;
+  } else {
+    document.getElementById("modal-vault-error").style.display = "none";
+  }
+
+  if (hasError) return;
+
+  // Preserve working configuration
+  localStorage.setItem("term_relay_api_key", k);
+  if (v) localStorage.setItem("term_vault_url", v);
+  else localStorage.removeItem("term_vault_url");
+
+  updateSettingsLabels();
+  closeConfigModal();
+  showToast("Configuration saved successfully.");
+
+  if (passkey) {
+    initRelay();
+  }
 }
 
 // -------------------------------------------------------------
@@ -201,14 +288,13 @@ function injectCallOverlayDOM() {
 }
 
 async function triggerCallHandOff(isVideo) {
-  // Check if Native Android Bridge exists first
   if (window.AndroidBridge && typeof window.AndroidBridge.openCallScreen === "function") {
     window.AndroidBridge.openCallScreen(isVideo);
     return;
   }
 
   if (!passkey || !channel) {
-    logSys("CONNECT TO RELAY FIRST BEFORE CALLING.");
+    showToast("Connect to relay first before calling.");
     return;
   }
 
@@ -233,7 +319,7 @@ async function triggerCallHandOff(isVideo) {
     await createAndSendOffer(isVideo);
   } catch (err) {
     document.getElementById("call-overlay").style.display = "none";
-    logSys("CALL BLOCKED: APK WebView requires Audio/Camera permissions.");
+    showToast("Call blocked: Permissions required.");
   }
 }
 
@@ -376,7 +462,7 @@ async function acceptIncomingCall() {
     });
     pendingIncomingOffer = null;
   } catch (err) {
-    logSys("CALL FAILED: Microphone/Camera blocked by WebView.");
+    showToast("Call failed: Permission denied.");
     endActiveCall(true);
   }
 }
@@ -422,9 +508,9 @@ async function toggleMic() {
 
       await createAndSendOffer(false);
       startPttFallback(localMediaStream);
-      logSys("LIVE MIC ON (STREAMING).");
+      showToast("Live mic active.");
     } catch (err) {
-      logSys("MIC BLOCKED BY WEBVIEW: Open in Chrome or enable Audio permission.");
+      showToast("Mic blocked by WebView.");
     }
   } else {
     isMicActive = false;
@@ -434,7 +520,7 @@ async function toggleMic() {
       localMediaStream.getTracks().forEach(t => t.stop());
       localMediaStream = null;
     }
-    logSys("LIVE MIC OFF.");
+    showToast("Live mic muted.");
   }
 }
 
@@ -490,14 +576,13 @@ function toggleSpeaker() {
   remoteAudioEl.muted = isSpeakerMuted;
   const btn = document.getElementById("speaker-toggle-btn");
   if (btn) btn.classList.toggle("speaker-muted", isSpeakerMuted);
-  logSys(isSpeakerMuted ? "SPEAKER MUTED." : "SPEAKER UNMUTED.");
+  showToast(isSpeakerMuted ? "Speaker muted." : "Speaker unmuted.");
 }
 
 // -------------------------------------------------------------
 // CLIPBOARD PASTE + CHUNKED FILE & IMAGE TRANSFER
 // -------------------------------------------------------------
 async function triggerFileSelect() {
-  // 1. Try reading an image directly from the Clipboard API first (bypasses broken WebView picker)
   if (navigator.clipboard && navigator.clipboard.read) {
     try {
       const items = await navigator.clipboard.read();
@@ -513,13 +598,11 @@ async function triggerFileSelect() {
     } catch (e) {}
   }
 
-  // 2. Trigger standard file input (works in Chrome or WebViews with onShowFileChooser)
   const picker = document.getElementById("file-picker");
   if (picker) picker.click();
 
-  // 3. Guide user to paste directly from keyboard clipboard if WebView ignores picker
   msgInput.focus();
-  logSys("WEBVIEW TIP: Copy any photo or tap it in your Keyboard Clipboard to send!");
+  showToast("Tip: Copy photo or paste from keyboard.");
 }
 
 async function compressImageIfNeeded(file) {
@@ -552,7 +635,7 @@ async function handleFileSelected(event) {
   if (event.target) event.target.value = "";
 
   if (!file.type.startsWith("image/") && file.size > 400 * 1024) {
-    alert("For non-image files, keep size under 400 KB.");
+    showToast("File size must be under 400 KB.");
     return;
   }
 
@@ -607,6 +690,7 @@ async function handleFileSelected(event) {
 }
 
 function handleIncomingFileChunk(pkg) {
+  if (!pkg || pkg.senderId === clientId) return;
   const { msgId, index, total, chunk } = pkg;
   if (!incomingFileBuffers[msgId]) {
     incomingFileBuffers[msgId] = { parts: new Array(total), received: 0, total: total };
@@ -625,6 +709,7 @@ function handleIncomingFileChunk(pkg) {
     const decStr = decrypt(fullCipher);
     if (decStr && !document.getElementById(msgId)) {
       const inner = JSON.parse(decStr);
+      if (inner.senderId === clientId) return; // Strict ownership check
       renderBubble(inner.text, "peer", inner.msgId, inner.timestamp, inner.burn, inner.reply, inner.fileData);
       dispatchRaw({ type: "ack", msgId: inner.msgId, senderId: clientId });
     }
@@ -700,7 +785,6 @@ function initRelay() {
   const apiKey = getStoredApiKey();
   if (!apiKey) {
     setPeerStatusUI("KEY REQUIRED", "offline");
-    logSys("SETUP: Configure your Relay Product Key in Settings (Three dots).");
     return;
   }
 
@@ -711,7 +795,6 @@ function initRelay() {
 
     if (typeof PS !== "function") {
       setPeerStatusUI("LIB ERROR", "offline");
-      logSys("ERR: PieSocket library failed to resolve.");
       return;
     }
 
@@ -727,7 +810,6 @@ function initRelay() {
     if (subResult && typeof subResult.then === "function") {
       subResult.then((ch) => setupChannel(ch)).catch(() => {
         setPeerStatusUI("AUTH FAILED", "offline");
-        logSys("SOCKET ERROR: Invalid Key or Network Reject.");
       });
     } else {
       setupChannel(subResult);
@@ -735,7 +817,6 @@ function initRelay() {
 
   } catch (e) {
     setPeerStatusUI("INIT ERROR", "offline");
-    logSys("ERR: " + e.message);
   }
 }
 
@@ -789,7 +870,7 @@ function setPeerStatusUI(text, state) {
 function handlePacket(raw) {
   try {
     const pkg = typeof raw === "string" ? JSON.parse(raw) : raw;
-    if (!pkg || pkg.senderId === clientId) return;
+    if (!pkg || pkg.senderId === clientId) return; // Strict self-echo suppression
 
     refreshPeerWatchdog();
 
@@ -843,7 +924,7 @@ function handlePacket(raw) {
         stream.innerHTML = "";
         stream.appendChild(typingIndicator);
         outbox = [];
-        logSys("SESSION BUFFER SHREDDED BY PEER.");
+        showToast("Session shredded by peer.");
         break;
 
       case "config-sync":
@@ -1353,9 +1434,9 @@ function toggleDisappearingSetting(broadcast) {
 
   if (broadcast) {
     broadcastConfigSync();
-    logSys(disappearingEnabled
-      ? `YOU SET DISAPPEARING MESSAGES TO ${burnDuration}s.`
-      : "YOU TURNED OFF DISAPPEARING MESSAGES.");
+    showToast(disappearingEnabled
+      ? `Disappearing set to ${burnDuration}s.`
+      : "Disappearing messages turned off.");
   }
 }
 
@@ -1366,7 +1447,7 @@ function setDisappearingDuration(val, label, broadcast) {
 
   if (broadcast) {
     broadcastConfigSync();
-    logSys(`YOU SET DISAPPEARING MESSAGES TO ${label}.`);
+    showToast(`Disappearing set to ${label}.`);
   }
 }
 
@@ -1378,10 +1459,7 @@ function applyRemoteConfig(enabled, duration) {
   localStorage.setItem("term_burn_duration", burnDuration);
 
   updateDisappearingUI();
-
-  logSys(disappearingEnabled
-    ? `PEER SET DISAPPEARING MESSAGES TO ${burnDuration}s.`
-    : "PEER TURNED OFF DISAPPEARING MESSAGES.");
+  showToast(`Peer updated timer to ${burnDuration}s.`);
 }
 
 function updateDisappearingUI() {
@@ -1419,7 +1497,12 @@ function closeSettings() {
 window.addEventListener("popstate", () => {
   const settingsScreen = document.getElementById("settings-screen");
   const selectionModal = document.getElementById("selection-modal");
+  const configModal = document.getElementById("config-modal");
 
+  if (configModal && configModal.style.display === "flex") {
+    configModal.style.display = "none";
+    return;
+  }
   if (selectionModal && selectionModal.style.display === "flex") {
     selectionModal.style.display = "none";
     return;
@@ -1542,7 +1625,7 @@ async function purgeBothScreens() {
     }
 
     closeSettings();
-    logSys("LOCAL & VAULT BUFFERS SHREDDED.");
+    showToast("Buffers shredded successfully.");
   }
 }
 
