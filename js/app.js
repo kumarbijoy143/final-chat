@@ -31,27 +31,16 @@ let activeQuotedTarget = null;
 let editingTargetMsgId = null;
 let activeContextTarget = null;
 
-const incomingFileBuffers = {};
-
+// PUBG-Style Live WebRTC Audio & P2P Data State
 let rtcPeer = null;
-let iceCandidateQueue = [];
-let localMediaStream = null;
+let localAudioStream = null;
 let isMicActive = false;
 let isSpeakerMuted = false;
-let activeCallMode = null;
-let pendingIncomingOffer = null;
-
-let pttRecorder = null;
-let pttInterval = null;
-
 const remoteAudioEl = new Audio();
 remoteAudioEl.autoplay = true;
 
 const RTC_CONFIG = {
-  iceServers: [
-    { urls: "stun:stun.l.google.com:19302" },
-    { urls: "stun:stun1.l.google.com:19302" }
-  ]
+  iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
 };
 
 const stream = document.getElementById("chat-stream");
@@ -81,6 +70,7 @@ function resizeInputBox() {
 
 msgInput.addEventListener("input", () => {
   resizeInputBox();
+
   if (!channel || !passkey) return;
 
   const now = Date.now();
@@ -95,29 +85,11 @@ msgInput.addEventListener("input", () => {
   }, 2500);
 });
 
-msgInput.addEventListener("paste", (e) => {
-  const items = (e.clipboardData || window.clipboardData)?.items;
-  if (!items) return;
-
-  for (let i = 0; i < items.length; i++) {
-    if (items[i].type.indexOf("image") !== -1) {
-      e.preventDefault();
-      const file = items[i].getAsFile();
-      if (file) {
-        handleFileSelected({ target: { files: [file], value: "" } });
-      }
-      return;
-    }
-  }
-});
-
 window.addEventListener("DOMContentLoaded", () => {
   setTheme(currentTheme);
   setFont(currentFont);
   setFontSize(currentFontSize);
   updateDisappearingUI();
-  updateSettingsLabels();
-  injectCallOverlayDOM();
 
   const keyInput = document.getElementById("numeric-key");
   setTimeout(() => {
@@ -127,7 +99,7 @@ window.addEventListener("DOMContentLoaded", () => {
     }
   }, 150);
 
-  // Check if configuration is missing upon first open
+  // Automatically prompt configuration modal if no API key is stored yet
   if (!getStoredApiKey()) {
     setTimeout(() => {
       openConfigModal();
@@ -135,7 +107,9 @@ window.addEventListener("DOMContentLoaded", () => {
   }
 });
 
-msgInput.addEventListener("focus", () => scrollToBottom());
+msgInput.addEventListener("focus", () => {
+  scrollToBottom();
+});
 
 msgInput.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey) {
@@ -166,9 +140,18 @@ function showToast(msg) {
   }, 2500);
 }
 
+function triggerCallHandOff(isVideo) {
+  if (window.AndroidBridge && window.AndroidBridge.openCallScreen) {
+    window.AndroidBridge.openCallScreen(isVideo);
+  } else {
+    showToast("Launching local calling terminal (Voice/Video P2P)...");
+  }
+}
+
 function panicExit() {
-  endActiveCall(false);
-  stopPttFallback();
+  if (localAudioStream) {
+    localAudioStream.getTracks().forEach(t => t.stop());
+  }
   stream.innerHTML = "";
   outbox = [];
   passkey = "";
@@ -185,14 +168,16 @@ function mountSession() {
   passkey = val;
   document.getElementById("passkey-dialog").style.display = "none";
 
-  setTimeout(() => msgInput.focus(), 100);
+  setTimeout(() => {
+    msgInput.focus();
+  }, 100);
 
   initRelay();
   fetchAndBurnVault();
 }
 
 // -------------------------------------------------------------
-// CUSTOM CONFIGURATION MODAL CONTROLS
+// CUSTOM CONFIGURATION MODAL CONTROLS (Replacing Native Prompts)
 // -------------------------------------------------------------
 function openConfigModal() {
   const k = getStoredApiKey();
@@ -248,471 +233,11 @@ function saveConfigModal() {
   if (v) localStorage.setItem("term_vault_url", v);
   else localStorage.removeItem("term_vault_url");
 
-  updateSettingsLabels();
   closeConfigModal();
   showToast("Configuration saved successfully.");
 
   if (passkey) {
     initRelay();
-  }
-}
-
-// -------------------------------------------------------------
-// IN-APP ENCRYPTED VOICE & VIDEO CALLING + PUBG MIC
-// -------------------------------------------------------------
-function injectCallOverlayDOM() {
-  if (document.getElementById("call-overlay")) return;
-  const div = document.createElement("div");
-  div.id = "call-overlay";
-  div.style.cssText = "position:fixed;inset:0;background:rgba(9,10,15,0.96);z-index:200;display:none;flex-direction:column;justify-content:space-between;align-items:center;padding:40px 20px;backdrop-filter:blur(10px);";
-  div.innerHTML = `
-    <div style="text-align:center;z-index:202;">
-      <div id="call-title" style="font-size:20px;font-weight:600;color:#fff;margin-bottom:6px;">ENCRYPTED CALL</div>
-      <div id="call-sub" style="font-size:13px;color:var(--accent);letter-spacing:0.5px;">DIALING PEER...</div>
-    </div>
-    <div style="position:relative;width:100%;flex:1;max-height:65vh;margin:20px 0;border-radius:18px;overflow:hidden;background:#12151e;border:1px solid var(--card-border);display:flex;align-items:center;justify-content:center;">
-      <div id="call-avatar" style="width:96px;height:96px;border-radius:50%;background:rgba(0,168,132,0.15);border:2px solid var(--accent);display:flex;align-items:center;justify-content:center;">
-        <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#00a884" stroke-width="2">
-          <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/>
-        </svg>
-      </div>
-      <video id="remote-video" autoplay playsinline style="width:100%;height:100%;object-fit:cover;display:none;"></video>
-      <video id="local-video" autoplay playsinline muted style="position:absolute;bottom:14px;right:14px;width:95px;height:135px;border-radius:12px;object-fit:cover;border:2px solid var(--accent);background:#000;display:none;z-index:203;"></video>
-    </div>
-    <div style="display:flex;align-items:center;gap:22px;z-index:202;">
-      <button id="call-answer-btn" onclick="acceptIncomingCall()" style="width:58px;height:58px;border-radius:50%;border:none;background:#22c55e;color:#fff;font-size:22px;display:none;align-items:center;justify-content:center;cursor:pointer;">✓</button>
-      <button onclick="endActiveCall(true)" style="width:58px;height:58px;border-radius:50%;border:none;background:#ef4444;color:#fff;font-size:22px;display:flex;align-items:center;justify-content:center;cursor:pointer;">✕</button>
-    </div>
-  `;
-  document.body.appendChild(div);
-}
-
-async function triggerCallHandOff(isVideo) {
-  if (window.AndroidBridge && typeof window.AndroidBridge.openCallScreen === "function") {
-    window.AndroidBridge.openCallScreen(isVideo);
-    return;
-  }
-
-  if (!passkey || !channel) {
-    showToast("Connect to relay first before calling.");
-    return;
-  }
-
-  activeCallMode = isVideo ? "video" : "voice";
-  document.getElementById("call-overlay").style.display = "flex";
-  document.getElementById("call-title").innerText = isVideo ? "ENCRYPTED VIDEO CALL" : "ENCRYPTED VOICE CALL";
-  document.getElementById("call-sub").innerText = "RINGING PEER...";
-  document.getElementById("call-answer-btn").style.display = "none";
-
-  try {
-    localMediaStream = await navigator.mediaDevices.getUserMedia({
-      audio: true,
-      video: isVideo ? { facingMode: "user" } : false
-    });
-
-    if (isVideo) {
-      const lv = document.getElementById("local-video");
-      lv.srcObject = localMediaStream;
-      lv.style.display = "block";
-    }
-
-    await createAndSendOffer(isVideo);
-  } catch (err) {
-    document.getElementById("call-overlay").style.display = "none";
-    showToast("Call blocked: Permissions required.");
-  }
-}
-
-function setupRtcPeer() {
-  if (rtcPeer) {
-    try { rtcPeer.close(); } catch (e) {}
-  }
-  rtcPeer = new RTCPeerConnection(RTC_CONFIG);
-  iceCandidateQueue = [];
-
-  rtcPeer.onicecandidate = (e) => {
-    if (e.candidate) {
-      dispatchRaw({
-        type: "rtc-sig",
-        sig: encrypt(JSON.stringify({ ice: e.candidate })),
-        senderId: clientId
-      });
-    }
-  };
-
-  rtcPeer.ontrack = (e) => {
-    if (e.streams && e.streams[0]) {
-      const remoteStream = e.streams[0];
-      if (remoteStream.getVideoTracks().length > 0) {
-        const rv = document.getElementById("remote-video");
-        rv.srcObject = remoteStream;
-        rv.style.display = "block";
-        document.getElementById("call-avatar").style.display = "none";
-      } else {
-        remoteAudioEl.srcObject = remoteStream;
-        remoteAudioEl.muted = isSpeakerMuted;
-        remoteAudioEl.play().catch(() => {});
-      }
-      document.getElementById("call-sub").innerText = "CONNECTED (P2P LIVE)";
-    }
-  };
-}
-
-async function createAndSendOffer(isVideo) {
-  setupRtcPeer();
-  if (localMediaStream) {
-    localMediaStream.getTracks().forEach(track => rtcPeer.addTrack(track, localMediaStream));
-  }
-  const offer = await rtcPeer.createOffer();
-  await rtcPeer.setLocalDescription(offer);
-
-  dispatchRaw({
-    type: "rtc-sig",
-    sig: encrypt(JSON.stringify({
-      sdp: rtcPeer.localDescription,
-      callMode: isVideo ? "video" : (activeCallMode === "voice" ? "voice" : "pubg")
-    })),
-    senderId: clientId
-  });
-}
-
-async function handleRtcSignal(cipherSig) {
-  const raw = decrypt(cipherSig);
-  if (!raw) return;
-  const signal = JSON.parse(raw);
-
-  if (signal.callEnd) {
-    endActiveCall(false);
-    return;
-  }
-
-  if (signal.sdp) {
-    if (signal.sdp.type === "offer") {
-      if (signal.callMode === "video" || signal.callMode === "voice") {
-        pendingIncomingOffer = signal;
-        activeCallMode = signal.callMode;
-        document.getElementById("call-overlay").style.display = "flex";
-        document.getElementById("call-title").innerText = signal.callMode === "video" ? "INCOMING VIDEO CALL" : "INCOMING VOICE CALL";
-        document.getElementById("call-sub").innerText = "TAP GREEN BUTTON TO ANSWER";
-        document.getElementById("call-answer-btn").style.display = "flex";
-        if (navigator.vibrate) navigator.vibrate([300, 150, 300]);
-        return;
-      }
-
-      setupRtcPeer();
-      await rtcPeer.setRemoteDescription(new RTCSessionDescription(signal.sdp));
-      while (iceCandidateQueue.length > 0) {
-        await rtcPeer.addIceCandidate(new RTCIceCandidate(iceCandidateQueue.shift()));
-      }
-      const answer = await rtcPeer.createAnswer();
-      await rtcPeer.setLocalDescription(answer);
-      dispatchRaw({
-        type: "rtc-sig",
-        sig: encrypt(JSON.stringify({ sdp: rtcPeer.localDescription })),
-        senderId: clientId
-      });
-    } else if (signal.sdp.type === "answer" && rtcPeer) {
-      await rtcPeer.setRemoteDescription(new RTCSessionDescription(signal.sdp));
-      while (iceCandidateQueue.length > 0) {
-        await rtcPeer.addIceCandidate(new RTCIceCandidate(iceCandidateQueue.shift()));
-      }
-    }
-  } else if (signal.ice) {
-    if (rtcPeer && rtcPeer.remoteDescription) {
-      try { await rtcPeer.addIceCandidate(new RTCIceCandidate(signal.ice)); } catch (e) {}
-    } else {
-      iceCandidateQueue.push(signal.ice);
-    }
-  }
-}
-
-async function acceptIncomingCall() {
-  if (!pendingIncomingOffer) return;
-  document.getElementById("call-answer-btn").style.display = "none";
-  document.getElementById("call-sub").innerText = "CONNECTING...";
-
-  const isVideo = pendingIncomingOffer.callMode === "video";
-  try {
-    localMediaStream = await navigator.mediaDevices.getUserMedia({
-      audio: true,
-      video: isVideo ? { facingMode: "user" } : false
-    });
-
-    if (isVideo) {
-      const lv = document.getElementById("local-video");
-      lv.srcObject = localMediaStream;
-      lv.style.display = "block";
-    }
-
-    setupRtcPeer();
-    localMediaStream.getTracks().forEach(t => rtcPeer.addTrack(t, localMediaStream));
-
-    await rtcPeer.setRemoteDescription(new RTCSessionDescription(pendingIncomingOffer.sdp));
-    while (iceCandidateQueue.length > 0) {
-      await rtcPeer.addIceCandidate(new RTCIceCandidate(iceCandidateQueue.shift()));
-    }
-
-    const answer = await rtcPeer.createAnswer();
-    await rtcPeer.setLocalDescription(answer);
-
-    dispatchRaw({
-      type: "rtc-sig",
-      sig: encrypt(JSON.stringify({ sdp: rtcPeer.localDescription })),
-      senderId: clientId
-    });
-    pendingIncomingOffer = null;
-  } catch (err) {
-    showToast("Call failed: Permission denied.");
-    endActiveCall(true);
-  }
-}
-
-function endActiveCall(notifyPeer) {
-  const overlay = document.getElementById("call-overlay");
-  if (overlay) overlay.style.display = "none";
-  const rv = document.getElementById("remote-video");
-  if (rv) rv.style.display = "none";
-  const lv = document.getElementById("local-video");
-  if (lv) lv.style.display = "none";
-  const av = document.getElementById("call-avatar");
-  if (av) av.style.display = "flex";
-
-  activeCallMode = null;
-  pendingIncomingOffer = null;
-
-  if (localMediaStream && !isMicActive) {
-    localMediaStream.getTracks().forEach(t => t.stop());
-    localMediaStream = null;
-  }
-  if (rtcPeer && !isMicActive) {
-    try { rtcPeer.close(); } catch (e) {}
-    rtcPeer = null;
-  }
-  if (notifyPeer) {
-    dispatchRaw({
-      type: "rtc-sig",
-      sig: encrypt(JSON.stringify({ callEnd: true })),
-      senderId: clientId
-    });
-  }
-}
-
-async function toggleMic() {
-  const btn = document.getElementById("mic-toggle-btn");
-
-  if (!isMicActive) {
-    try {
-      localMediaStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-      isMicActive = true;
-      if (btn) btn.classList.add("mic-active");
-
-      await createAndSendOffer(false);
-      startPttFallback(localMediaStream);
-      showToast("Live mic active.");
-    } catch (err) {
-      showToast("Mic blocked by WebView.");
-    }
-  } else {
-    isMicActive = false;
-    if (btn) btn.classList.remove("mic-active");
-    stopPttFallback();
-    if (localMediaStream) {
-      localMediaStream.getTracks().forEach(t => t.stop());
-      localMediaStream = null;
-    }
-    showToast("Live mic muted.");
-  }
-}
-
-function startPttFallback(mediaStream) {
-  stopPttFallback();
-  try {
-    pttRecorder = new MediaRecorder(mediaStream);
-    pttRecorder.ondataavailable = (e) => {
-      if (e.data && e.data.size > 0 && isMicActive) {
-        const reader = new FileReader();
-        reader.onloadend = () => {
-          if (reader.result && reader.result.length < 14000) {
-            dispatchRaw({
-              type: "audio-burst",
-              data: encrypt(reader.result),
-              senderId: clientId
-            });
-          }
-        };
-        reader.readAsDataURL(e.data);
-      }
-    };
-    pttRecorder.start();
-    pttInterval = setInterval(() => {
-      if (pttRecorder && pttRecorder.state === "recording") {
-        pttRecorder.stop();
-        pttRecorder.start();
-      }
-    }, 1400);
-  } catch (e) {}
-}
-
-function stopPttFallback() {
-  clearInterval(pttInterval);
-  if (pttRecorder && pttRecorder.state !== "inactive") {
-    try { pttRecorder.stop(); } catch (e) {}
-  }
-  pttRecorder = null;
-}
-
-function playIncomingAudioBurst(cipherAudio) {
-  if (isSpeakerMuted) return;
-  if (remoteAudioEl.srcObject && !remoteAudioEl.paused) return;
-  const dataUrl = decrypt(cipherAudio);
-  if (dataUrl) {
-    const clip = new Audio(dataUrl);
-    clip.play().catch(() => {});
-  }
-}
-
-function toggleSpeaker() {
-  isSpeakerMuted = !isSpeakerMuted;
-  remoteAudioEl.muted = isSpeakerMuted;
-  const btn = document.getElementById("speaker-toggle-btn");
-  if (btn) btn.classList.toggle("speaker-muted", isSpeakerMuted);
-  showToast(isSpeakerMuted ? "Speaker muted." : "Speaker unmuted.");
-}
-
-// -------------------------------------------------------------
-// CLIPBOARD PASTE + CHUNKED FILE & IMAGE TRANSFER
-// -------------------------------------------------------------
-async function triggerFileSelect() {
-  if (navigator.clipboard && navigator.clipboard.read) {
-    try {
-      const items = await navigator.clipboard.read();
-      for (const item of items) {
-        const imgType = item.types.find(t => t.startsWith("image/"));
-        if (imgType) {
-          const blob = await item.getType(imgType);
-          const file = new File([blob], "clipboard_photo.jpg", { type: imgType });
-          handleFileSelected({ target: { files: [file], value: "" } });
-          return;
-        }
-      }
-    } catch (e) {}
-  }
-
-  const picker = document.getElementById("file-picker");
-  if (picker) picker.click();
-
-  msgInput.focus();
-  showToast("Tip: Copy photo or paste from keyboard.");
-}
-
-async function compressImageIfNeeded(file) {
-  if (!file.type.startsWith("image/")) return null;
-  return new Promise((resolve) => {
-    const img = new Image();
-    const url = URL.createObjectURL(file);
-    img.onload = () => {
-      const canvas = document.createElement("canvas");
-      const MAX_DIM = 900;
-      let w = img.width;
-      let h = img.height;
-      if (w > h && w > MAX_DIM) { h *= MAX_DIM / w; w = MAX_DIM; }
-      else if (h > MAX_DIM) { w *= MAX_DIM / h; h = MAX_DIM; }
-      canvas.width = w;
-      canvas.height = h;
-      const ctx = canvas.getContext("2d");
-      ctx.drawImage(img, 0, 0, w, h);
-      URL.revokeObjectURL(url);
-      resolve(canvas.toDataURL("image/jpeg", 0.72));
-    };
-    img.onerror = () => resolve(null);
-    img.src = url;
-  });
-}
-
-async function handleFileSelected(event) {
-  const file = event.target.files[0];
-  if (!file || !passkey) return;
-  if (event.target) event.target.value = "";
-
-  if (!file.type.startsWith("image/") && file.size > 400 * 1024) {
-    showToast("File size must be under 400 KB.");
-    return;
-  }
-
-  let base64Data = await compressImageIfNeeded(file);
-  if (!base64Data) {
-    base64Data = await new Promise((res) => {
-      const r = new FileReader();
-      r.onload = () => res(r.result);
-      r.readAsDataURL(file);
-    });
-  }
-
-  const filePayload = {
-    name: file.name || "photo.jpg",
-    mime: file.type || "image/jpeg",
-    data: base64Data
-  };
-
-  const msgId = "m_" + Math.random().toString(36).substr(2, 8);
-  const nowTime = getFormattedTime();
-  const activeBurn = disappearingEnabled ? burnDuration : 0;
-
-  renderBubble(filePayload.name, "you", msgId, nowTime, activeBurn, null, filePayload);
-
-  const fullPacketObj = {
-    msgId: msgId,
-    text: filePayload.name,
-    timestamp: nowTime,
-    burn: activeBurn,
-    reply: null,
-    fileData: filePayload,
-    senderId: clientId
-  };
-
-  const encryptedFull = encrypt(JSON.stringify(fullPacketObj));
-
-  const CHUNK_SIZE = 7500;
-  const totalChunks = Math.ceil(encryptedFull.length / CHUNK_SIZE);
-
-  for (let i = 0; i < totalChunks; i++) {
-    const part = encryptedFull.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
-    dispatchRaw({
-      type: "file-chunk",
-      msgId: msgId,
-      index: i,
-      total: totalChunks,
-      chunk: part,
-      senderId: clientId
-    });
-    await new Promise(r => setTimeout(r, 60));
-  }
-}
-
-function handleIncomingFileChunk(pkg) {
-  if (!pkg || pkg.senderId === clientId) return;
-  const { msgId, index, total, chunk } = pkg;
-  if (!incomingFileBuffers[msgId]) {
-    incomingFileBuffers[msgId] = { parts: new Array(total), received: 0, total: total };
-  }
-
-  const entry = incomingFileBuffers[msgId];
-  if (!entry.parts[index]) {
-    entry.parts[index] = chunk;
-    entry.received++;
-  }
-
-  if (entry.received === entry.total) {
-    const fullCipher = entry.parts.join("");
-    delete incomingFileBuffers[msgId];
-
-    const decStr = decrypt(fullCipher);
-    if (decStr && !document.getElementById(msgId)) {
-      const inner = JSON.parse(decStr);
-      if (inner.senderId === clientId) return; // Strict ownership check
-      renderBubble(inner.text, "peer", inner.msgId, inner.timestamp, inner.burn, inner.reply, inner.fileData);
-      dispatchRaw({ type: "ack", msgId: inner.msgId, senderId: clientId });
-    }
   }
 }
 
@@ -772,10 +297,157 @@ async function fetchAndBurnVault() {
         }
       });
       if (count > 0) {
-        logSys(`SYNCED ${count} OFFLINE MESSAGE(S) & SHREDDED VAULT.`);
+        showToast(`Synced ${count} offline message(s).`);
       }
     }
   } catch (e) {}
+}
+
+// -------------------------------------------------------------
+// PUBG-STYLE MIC & SPEAKER LIVE WEBRTC ENGINE
+// -------------------------------------------------------------
+async function ensureAudioConnection(isInitiator) {
+  if (!rtcPeer) {
+    rtcPeer = new RTCPeerConnection(RTC_CONFIG);
+
+    rtcPeer.onicecandidate = (e) => {
+      if (e.candidate) {
+        dispatchRaw({
+          type: "rtc-sig",
+          sig: encrypt(JSON.stringify({ ice: e.candidate })),
+          senderId: clientId
+        });
+      }
+    };
+
+    rtcPeer.ontrack = (e) => {
+      if (e.streams && e.streams[0]) {
+        remoteAudioEl.srcObject = e.streams[0];
+        remoteAudioEl.muted = isSpeakerMuted;
+      }
+    };
+  }
+
+  if (isInitiator) {
+    const offer = await rtcPeer.createOffer();
+    await rtcPeer.setLocalDescription(offer);
+    dispatchRaw({
+      type: "rtc-sig",
+      sig: encrypt(JSON.stringify({ sdp: rtcPeer.localDescription })),
+      senderId: clientId
+    });
+  }
+}
+
+async function handleRtcSignal(cipherSig) {
+  const raw = decrypt(cipherSig);
+  if (!raw) return;
+  const signal = JSON.parse(raw);
+
+  await ensureAudioConnection(false);
+
+  if (signal.sdp) {
+    await rtcPeer.setRemoteDescription(new RTCSessionDescription(signal.sdp));
+    if (signal.sdp.type === "offer") {
+      const answer = await rtcPeer.createAnswer();
+      await rtcPeer.setLocalDescription(answer);
+      dispatchRaw({
+        type: "rtc-sig",
+        sig: encrypt(JSON.stringify({ sdp: rtcPeer.localDescription })),
+        senderId: clientId
+      });
+    }
+  } else if (signal.ice) {
+    try {
+      await rtcPeer.addIceCandidate(new RTCIceCandidate(signal.ice));
+    } catch (e) {}
+  }
+}
+
+async function toggleMic() {
+  const btn = document.getElementById("mic-toggle-btn");
+  if (!localAudioStream) {
+    try {
+      localAudioStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+      await ensureAudioConnection(false);
+      localAudioStream.getTracks().forEach(track => rtcPeer.addTrack(track, localAudioStream));
+      await ensureAudioConnection(true);
+      isMicActive = true;
+    } catch (err) {
+      showToast("Mic access denied by WebView.");
+      return;
+    }
+  } else {
+    isMicActive = !isMicActive;
+    localAudioStream.getAudioTracks().forEach(t => t.enabled = isMicActive);
+  }
+
+  if (btn) btn.classList.toggle("mic-active", isMicActive);
+}
+
+function toggleSpeaker() {
+  isSpeakerMuted = !isSpeakerMuted;
+  remoteAudioEl.muted = isSpeakerMuted;
+  const btn = document.getElementById("speaker-toggle-btn");
+  if (btn) btn.classList.toggle("speaker-muted", isSpeakerMuted);
+}
+
+// -------------------------------------------------------------
+// IN-MEMORY ENCRYPTED FILE / IMAGE ATTACHMENT
+// -------------------------------------------------------------
+function triggerFileSelect() {
+  document.getElementById("file-picker").click();
+}
+
+function handleFileSelected(event) {
+  const file = event.target.files[0];
+  if (!file || !passkey) return;
+
+  if (file.size > 2.5 * 1024 * 1024) {
+    showToast("File size must be under 2.5 MB.");
+    event.target.value = "";
+    return;
+  }
+
+  const reader = new FileReader();
+  reader.onload = () => {
+    const base64Data = reader.result;
+    const filePayload = {
+      name: file.name,
+      mime: file.type,
+      data: base64Data
+    };
+
+    const msgId = "m_" + Math.random().toString(36).substr(2, 8);
+    const nowTime = getFormattedTime();
+    const activeBurn = disappearingEnabled ? burnDuration : 0;
+
+    renderBubble(file.name, "you", msgId, nowTime, activeBurn, null, filePayload);
+
+    const packet = {
+      msgId: msgId,
+      text: file.name,
+      timestamp: nowTime,
+      burn: activeBurn,
+      reply: null,
+      fileData: filePayload,
+      senderId: clientId
+    };
+
+    dispatchRaw({
+      type: "chat",
+      msgId: msgId,
+      ciphertext: encrypt(JSON.stringify(packet)),
+      isJson: true,
+      senderId: clientId
+    });
+
+    if (!peerOnline) {
+      storeInOfflineVault(packet);
+    }
+  };
+  reader.readAsDataURL(file);
+  event.target.value = "";
 }
 
 // -------------------------------------------------------------
@@ -870,7 +542,7 @@ function setPeerStatusUI(text, state) {
 function handlePacket(raw) {
   try {
     const pkg = typeof raw === "string" ? JSON.parse(raw) : raw;
-    if (!pkg || pkg.senderId === clientId) return; // Strict self-echo suppression
+    if (!pkg || pkg.senderId === clientId) return;
 
     refreshPeerWatchdog();
 
@@ -882,14 +554,6 @@ function handlePacket(raw) {
         handleRtcSignal(pkg.sig);
         break;
 
-      case "audio-burst":
-        playIncomingAudioBurst(pkg.data);
-        break;
-
-      case "file-chunk":
-        handleIncomingFileChunk(pkg);
-        break;
-
       case "typing":
         handlePeerTyping(pkg.status);
         break;
@@ -898,10 +562,19 @@ function handlePacket(raw) {
         clearTimeout(peerTypingTimer);
         typingIndicator.style.display = "none";
 
-        const plain = decrypt(pkg.ciphertext);
-        if (plain && !document.getElementById(pkg.msgId)) {
-          renderBubble(plain, "peer", pkg.msgId, pkg.timestamp, pkg.burn, pkg.reply);
-          dispatchRaw({ type: "ack", msgId: pkg.msgId, senderId: clientId });
+        if (pkg.isJson) {
+          const decStr = decrypt(pkg.ciphertext);
+          if (decStr && !document.getElementById(pkg.msgId)) {
+            const inner = JSON.parse(decStr);
+            renderBubble(inner.text, "peer", inner.msgId, inner.timestamp, inner.burn, inner.reply, inner.fileData);
+            dispatchRaw({ type: "ack", msgId: inner.msgId, senderId: clientId });
+          }
+        } else {
+          const plain = decrypt(pkg.ciphertext);
+          if (plain && !document.getElementById(pkg.msgId)) {
+            renderBubble(plain, "peer", pkg.msgId, pkg.timestamp, pkg.burn, pkg.reply);
+            dispatchRaw({ type: "ack", msgId: pkg.msgId, senderId: clientId });
+          }
         }
         break;
 
@@ -1482,7 +1155,6 @@ function updateDisappearingUI() {
 }
 
 function openSettings() {
-  updateSettingsLabels();
   document.getElementById("settings-screen").style.display = "flex";
   history.pushState({ modal: "settings" }, "");
 }
