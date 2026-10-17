@@ -64,7 +64,7 @@
   transition: border-color 0.2s;
 }
 .custom-modal-input:focus {
-  border-color: var(--brand-blue);
+  border-color: var(--brand-blue, var(--accent));
 }
 
 .custom-input-toggle {
@@ -105,7 +105,7 @@
   color: var(--text-dim);
 }
 .custom-btn-save {
-  background: var(--brand-blue);
+  background: var(--accent);
   color: #ffffff;
 }
 
