@@ -99,7 +99,6 @@ window.addEventListener("DOMContentLoaded", () => {
     }
   }, 150);
 
-  // Automatically prompt configuration modal if no API key is stored yet
   if (!getStoredApiKey()) {
     setTimeout(() => {
       openConfigModal();
@@ -177,7 +176,7 @@ function mountSession() {
 }
 
 // -------------------------------------------------------------
-// CUSTOM CONFIGURATION MODAL CONTROLS (Replacing Native Prompts)
+// CUSTOM CONFIGURATION MODAL CONTROLS
 // -------------------------------------------------------------
 function openConfigModal() {
   const k = getStoredApiKey();
@@ -228,7 +227,6 @@ function saveConfigModal() {
 
   if (hasError) return;
 
-  // Preserve working configuration
   localStorage.setItem("term_relay_api_key", k);
   if (v) localStorage.setItem("term_vault_url", v);
   else localStorage.removeItem("term_vault_url");
