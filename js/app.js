@@ -1,9 +1,5 @@
 let passkey = "";
-let clientId = localStorage.getItem("term_client_id");
-if (!clientId) {
-  clientId = "dev_" + Math.random().toString(36).substr(2, 7);
-  localStorage.setItem("term_client_id", clientId);
-}
+let clientId = "dev_" + Math.random().toString(36).substr(2, 7);
 let channel = null;
 
 let disappearingEnabled = localStorage.getItem("term_disappearing") !== null
@@ -90,6 +86,7 @@ window.addEventListener("DOMContentLoaded", () => {
   setFont(currentFont);
   setFontSize(currentFontSize);
   updateDisappearingUI();
+  updateSettingsLabels();
 
   const keyInput = document.getElementById("numeric-key");
   setTimeout(() => {
@@ -98,12 +95,6 @@ window.addEventListener("DOMContentLoaded", () => {
       keyInput.click();
     }
   }, 150);
-
-  if (!getStoredApiKey()) {
-    setTimeout(() => {
-      openConfigModal();
-    }, 300);
-  }
 });
 
 msgInput.addEventListener("focus", () => {
@@ -125,25 +116,11 @@ function triggerNativeEmojiKeyboard() {
   msgInput.focus();
 }
 
-function showToast(msg) {
-  const container = document.getElementById("toast-container");
-  if (!container) return;
-  const t = document.createElement("div");
-  t.className = "toast-item";
-  t.innerText = msg;
-  container.appendChild(t);
-  setTimeout(() => {
-    t.style.opacity = "0";
-    t.style.transition = "opacity 0.2s ease";
-    setTimeout(() => t.remove(), 200);
-  }, 2500);
-}
-
 function triggerCallHandOff(isVideo) {
   if (window.AndroidBridge && window.AndroidBridge.openCallScreen) {
     window.AndroidBridge.openCallScreen(isVideo);
   } else {
-    showToast("Launching local calling terminal (Voice/Video P2P)...");
+    alert("Launching local calling terminal (Voice/Video P2P)...");
   }
 }
 
@@ -173,70 +150,6 @@ function mountSession() {
 
   initRelay();
   fetchAndBurnVault();
-}
-
-// -------------------------------------------------------------
-// CUSTOM CONFIGURATION MODAL CONTROLS
-// -------------------------------------------------------------
-function openConfigModal() {
-  const k = getStoredApiKey();
-  const v = getStoredVaultUrl();
-
-  document.getElementById("modal-api-key").value = k;
-  document.getElementById("modal-vault-url").value = v;
-  document.getElementById("modal-api-key").type = "password";
-  document.getElementById("modal-key-error").style.display = "none";
-  document.getElementById("modal-vault-error").style.display = "none";
-  document.getElementById("config-modal").style.display = "flex";
-}
-
-function closeConfigModal() {
-  document.getElementById("config-modal").style.display = "none";
-}
-
-function toggleApiKeyVisibility() {
-  const input = document.getElementById("modal-api-key");
-  const btn = event.target;
-  if (input.type === "password") {
-    input.type = "text";
-    btn.innerText = "Hide";
-  } else {
-    input.type = "password";
-    btn.innerText = "Show";
-  }
-}
-
-function saveConfigModal() {
-  const k = document.getElementById("modal-api-key").value.trim();
-  const v = document.getElementById("modal-vault-url").value.trim();
-
-  let hasError = false;
-  if (!k) {
-    document.getElementById("modal-key-error").style.display = "block";
-    hasError = true;
-  } else {
-    document.getElementById("modal-key-error").style.display = "none";
-  }
-
-  if (v && !v.startsWith("https://")) {
-    document.getElementById("modal-vault-error").style.display = "block";
-    hasError = true;
-  } else {
-    document.getElementById("modal-vault-error").style.display = "none";
-  }
-
-  if (hasError) return;
-
-  localStorage.setItem("term_relay_api_key", k);
-  if (v) localStorage.setItem("term_vault_url", v);
-  else localStorage.removeItem("term_vault_url");
-
-  closeConfigModal();
-  showToast("Configuration saved successfully.");
-
-  if (passkey) {
-    initRelay();
-  }
 }
 
 // -------------------------------------------------------------
@@ -295,7 +208,7 @@ async function fetchAndBurnVault() {
         }
       });
       if (count > 0) {
-        showToast(`Synced ${count} offline message(s).`);
+        logSys(`SYNCED ${count} OFFLINE MESSAGE(S) & SHREDDED VAULT.`);
       }
     }
   } catch (e) {}
@@ -372,7 +285,7 @@ async function toggleMic() {
       await ensureAudioConnection(true);
       isMicActive = true;
     } catch (err) {
-      showToast("Mic access denied by WebView.");
+      logSys("MIC ACCESS DENIED OR BLOCKED BY WEBVIEW.");
       return;
     }
   } else {
@@ -402,7 +315,7 @@ function handleFileSelected(event) {
   if (!file || !passkey) return;
 
   if (file.size > 2.5 * 1024 * 1024) {
-    showToast("File size must be under 2.5 MB.");
+    alert("For instant encrypted RAM transfer, select a file under 2.5 MB.");
     event.target.value = "";
     return;
   }
@@ -455,6 +368,7 @@ function initRelay() {
   const apiKey = getStoredApiKey();
   if (!apiKey) {
     setPeerStatusUI("KEY REQUIRED", "offline");
+    logSys("SETUP: Configure your Relay Product Key in Settings (Three dots).");
     return;
   }
 
@@ -465,6 +379,7 @@ function initRelay() {
 
     if (typeof PS !== "function") {
       setPeerStatusUI("LIB ERROR", "offline");
+      logSys("ERR: PieSocket library failed to resolve.");
       return;
     }
 
@@ -480,6 +395,7 @@ function initRelay() {
     if (subResult && typeof subResult.then === "function") {
       subResult.then((ch) => setupChannel(ch)).catch(() => {
         setPeerStatusUI("AUTH FAILED", "offline");
+        logSys("SOCKET ERROR: Invalid Key or Network Reject.");
       });
     } else {
       setupChannel(subResult);
@@ -487,6 +403,7 @@ function initRelay() {
 
   } catch (e) {
     setPeerStatusUI("INIT ERROR", "offline");
+    logSys("ERR: " + e.message);
   }
 }
 
@@ -595,7 +512,7 @@ function handlePacket(raw) {
         stream.innerHTML = "";
         stream.appendChild(typingIndicator);
         outbox = [];
-        showToast("Session shredded by peer.");
+        logSys("SESSION BUFFER SHREDDED BY PEER.");
         break;
 
       case "config-sync":
@@ -699,6 +616,7 @@ function sendMessage() {
     senderId: clientId
   });
 
+  // If peer is offline, push to universal Google Apps Script dead-drop vault
   if (!peerOnline) {
     storeInOfflineVault({
       msgId: msgId,
@@ -1105,9 +1023,9 @@ function toggleDisappearingSetting(broadcast) {
 
   if (broadcast) {
     broadcastConfigSync();
-    showToast(disappearingEnabled
-      ? `Disappearing set to ${burnDuration}s.`
-      : "Disappearing messages turned off.");
+    logSys(disappearingEnabled
+      ? `YOU SET DISAPPEARING MESSAGES TO ${burnDuration}s.`
+      : "YOU TURNED OFF DISAPPEARING MESSAGES.");
   }
 }
 
@@ -1118,7 +1036,7 @@ function setDisappearingDuration(val, label, broadcast) {
 
   if (broadcast) {
     broadcastConfigSync();
-    showToast(`Disappearing set to ${label}.`);
+    logSys(`YOU SET DISAPPEARING MESSAGES TO ${label}.`);
   }
 }
 
@@ -1130,7 +1048,10 @@ function applyRemoteConfig(enabled, duration) {
   localStorage.setItem("term_burn_duration", burnDuration);
 
   updateDisappearingUI();
-  showToast(`Peer updated timer to ${burnDuration}s.`);
+
+  logSys(disappearingEnabled
+    ? `PEER SET DISAPPEARING MESSAGES TO ${burnDuration}s.`
+    : "PEER TURNED OFF DISAPPEARING MESSAGES.");
 }
 
 function updateDisappearingUI() {
@@ -1153,6 +1074,7 @@ function updateDisappearingUI() {
 }
 
 function openSettings() {
+  updateSettingsLabels();
   document.getElementById("settings-screen").style.display = "flex";
   history.pushState({ modal: "settings" }, "");
 }
@@ -1167,12 +1089,7 @@ function closeSettings() {
 window.addEventListener("popstate", () => {
   const settingsScreen = document.getElementById("settings-screen");
   const selectionModal = document.getElementById("selection-modal");
-  const configModal = document.getElementById("config-modal");
 
-  if (configModal && configModal.style.display === "flex") {
-    configModal.style.display = "none";
-    return;
-  }
   if (selectionModal && selectionModal.style.display === "flex") {
     selectionModal.style.display = "none";
     return;
@@ -1295,7 +1212,7 @@ async function purgeBothScreens() {
     }
 
     closeSettings();
-    showToast("Buffers shredded successfully.");
+    logSys("LOCAL & VAULT BUFFERS SHREDDED.");
   }
 }
 
