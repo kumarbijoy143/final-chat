@@ -161,14 +161,27 @@
     <!-- PRODUCT KEY & OFFLINE VAULT CARD -->
     <div class="section-label">RELAY & OFFLINE VAULT (BYOK)</div>
     <div class="os-card">
-      <div class="os-row" onclick="openConfigModal()">
+      <div class="os-row" onclick="configureRelayKey()">
         <svg class="row-icon-svg" viewBox="0 0 24 24">
           <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
           <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
         </svg>
         <div class="row-content">
-          <div class="row-title">Change Configuration</div>
-          <div class="row-subtitle">Update Relay Key & Vault URL</div>
+          <div class="row-title">Relay Product Key</div>
+          <div class="row-subtitle" id="current-relay-label">Not Configured</div>
+        </div>
+        <div class="row-arrow">›</div>
+      </div>
+
+      <div class="os-row" onclick="configureVaultUrl()">
+        <svg class="row-icon-svg" viewBox="0 0 24 24">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+          <polyline points="7 10 12 15 17 10"/>
+          <line x1="12" y1="15" x2="12" y2="3"/>
+        </svg>
+        <div class="row-content">
+          <div class="row-title">Offline Vault URL</div>
+          <div class="row-subtitle" id="current-vault-label">Not Configured</div>
         </div>
         <div class="row-arrow">›</div>
       </div>
@@ -268,35 +281,6 @@
   </div>
 </div>
 
-<!-- Custom Configuration Modal -->
-<div id="config-modal" class="custom-modal-overlay">
-  <div class="custom-modal-box">
-    <div class="custom-modal-title">Console Configuration</div>
-    
-    <div class="custom-field-group">
-      <span class="custom-field-label">PieSocket Relay Key</span>
-      <div class="custom-input-wrapper">
-        <input type="password" id="modal-api-key" class="custom-modal-input" placeholder="Paste Relay Key" />
-        <button type="button" class="custom-input-toggle" onclick="toggleApiKeyVisibility()">Show</button>
-      </div>
-      <span id="modal-key-error" class="custom-modal-error">Relay key cannot be empty.</span>
-    </div>
-
-    <div class="custom-field-group">
-      <span class="custom-field-label">Offline Vault URL (Google Apps Script)</span>
-      <div class="custom-input-wrapper">
-        <input type="text" id="modal-vault-url" class="custom-modal-input" placeholder="https://script.google.com/..." />
-      </div>
-      <span id="modal-vault-error" class="custom-modal-error">Please enter a valid Web App URL.</span>
-    </div>
-
-    <div class="custom-modal-actions">
-      <button class="custom-btn custom-btn-cancel" onclick="closeConfigModal()">Cancel</button>
-      <button class="custom-btn custom-btn-save" onclick="saveConfigModal()">Save</button>
-    </div>
-  </div>
-</div>
-
 <!-- Selection Modal -->
 <div id="selection-modal" class="os-modal-overlay">
   <div class="os-dialog">
@@ -315,9 +299,6 @@
     <button class="passkey-btn" onclick="mountSession()">AUTHENTICATE</button>
   </div>
 </div>
-
-<!-- Toast Notifications Container -->
-<div id="toast-container"></div>
 
 <!-- Modular Scripts -->
 <script src="js/config.js"></script>
